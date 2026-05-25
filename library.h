@@ -1,6 +1,0 @@
-#ifndef CACHESYSTEM_LIBRARY_H
-#define CACHESYSTEM_LIBRARY_H
-
-void hello();
-
-#endif // CACHESYSTEM_LIBRARY_H
