@@ -20,15 +20,5 @@
         "CACHESYSTEM_BUILD_BENCHMARK": "OFF"
       }
     }
-  ],
-  "buildPresets": [
-    {
-      "name": "release",
-      "configurePreset": "release"
-    },
-    {
-      "name": "debug-library",
-      "configurePreset": "debug-library"
-    }
   ]
 }

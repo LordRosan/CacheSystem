@@ -134,12 +134,10 @@ private:
     }
 
     [[nodiscard]] std::size_t shard_index(const Key& key) const {
-        std::lock_guard lock(hash_mutex_);
         return hash_(key) % shards_.size();
     }
 
     Hash hash_;
-    mutable std::mutex hash_mutex_;
     std::size_t capacity_;
     std::vector<std::unique_ptr<shard>> shards_;
 };

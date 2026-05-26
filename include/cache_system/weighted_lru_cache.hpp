@@ -73,7 +73,6 @@ public:
         }
 
         index_.reserve(reserve_size_for_next_insert());
-        evict_until_fits(weight);
         items_.push_front(entry{std::move(key), std::move(value), weight});
         auto inserted_node = items_.begin();
         try {
@@ -82,6 +81,7 @@ public:
             items_.erase(inserted_node);
             throw;
         }
+        evict_until_fits(weight);
         current_weight_ += weight;
         cache_stats::increment(stats_.inserts);
         return true;

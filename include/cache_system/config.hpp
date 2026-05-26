@@ -12,8 +12,14 @@
 #define CACHE_SYSTEM_VERSION_PATCH 0
 #endif
 
+#define CACHE_SYSTEM_DETAIL_STRINGIFY(value) #value
+#define CACHE_SYSTEM_DETAIL_EXPAND_AND_STRINGIFY(value) CACHE_SYSTEM_DETAIL_STRINGIFY(value)
+
 #ifndef CACHE_SYSTEM_VERSION_STRING
-#define CACHE_SYSTEM_VERSION_STRING "0.1.0"
+#define CACHE_SYSTEM_VERSION_STRING                                                                       \
+    CACHE_SYSTEM_DETAIL_EXPAND_AND_STRINGIFY(CACHE_SYSTEM_VERSION_MAJOR) "."                              \
+        CACHE_SYSTEM_DETAIL_EXPAND_AND_STRINGIFY(CACHE_SYSTEM_VERSION_MINOR) "."                          \
+            CACHE_SYSTEM_DETAIL_EXPAND_AND_STRINGIFY(CACHE_SYSTEM_VERSION_PATCH)
 #endif
 
 namespace cache_system {
