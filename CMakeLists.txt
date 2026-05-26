@@ -15,20 +15,12 @@ option(CACHESYSTEM_BUILD_BENCHMARK "Build the standalone Release benchmark when 
 option(CACHESYSTEM_BUILD_TESTS "Build standalone correctness and package validation tests" ${PROJECT_IS_TOP_LEVEL})
 option(CACHESYSTEM_ENABLE_PACKAGE_VALIDATION "Enable install-tree package validation through CTest" ON)
 option(CACHESYSTEM_ENABLE_GCC_ANALYZER "Enable GCC -fanalyzer during compilation" OFF)
-option(CACHESYSTEM_ENABLE_CLANG_TIDY "Run clang-tidy during compilation" OFF)
 option(CACHESYSTEM_WARNINGS_AS_ERRORS "Treat CacheSystem warnings as errors" OFF)
 
 function(cachesystem_apply_warnings target)
-    if (MSVC)
-        target_compile_options(${target} PRIVATE /W4 /permissive-)
-        if (CACHESYSTEM_WARNINGS_AS_ERRORS)
-            target_compile_options(${target} PRIVATE /WX)
-        endif ()
-    else ()
-        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
-        if (CACHESYSTEM_WARNINGS_AS_ERRORS)
-            target_compile_options(${target} PRIVATE -Werror)
-        endif ()
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    if (CACHESYSTEM_WARNINGS_AS_ERRORS)
+        target_compile_options(${target} PRIVATE -Werror)
     endif ()
 endfunction()
 
@@ -45,19 +37,6 @@ function(cachesystem_apply_static_analysis target)
         endif ()
     endif ()
 
-    if (NOT CACHESYSTEM_ENABLE_CLANG_TIDY)
-        return()
-    endif ()
-
-    find_program(CACHESYSTEM_CLANG_TIDY_EXE NAMES clang-tidy)
-    if (NOT CACHESYSTEM_CLANG_TIDY_EXE)
-        message(FATAL_ERROR "CACHESYSTEM_ENABLE_CLANG_TIDY=ON requires clang-tidy in PATH.")
-    endif ()
-    set(CACHESYSTEM_CLANG_TIDY_COMMAND "${CACHESYSTEM_CLANG_TIDY_EXE};--quiet")
-    foreach (CACHESYSTEM_IMPLICIT_INCLUDE_DIR IN LISTS CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES)
-        list(APPEND CACHESYSTEM_CLANG_TIDY_COMMAND "--extra-arg=-isystem${CACHESYSTEM_IMPLICIT_INCLUDE_DIR}")
-    endforeach ()
-    set_target_properties(${target} PROPERTIES CXX_CLANG_TIDY "${CACHESYSTEM_CLANG_TIDY_COMMAND}")
 endfunction()
 
 function(cachesystem_apply_target_quality target)
@@ -87,8 +66,7 @@ target_compile_definitions(cache_system
 cachesystem_apply_target_quality(cache_system)
 target_compile_definitions(cache_system PRIVATE $<$<CONFIG:Release>:NDEBUG>)
 target_compile_options(cache_system PRIVATE
-        $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:MSVC>>:/O2>
-        $<$<AND:$<CONFIG:Release>,$<NOT:$<CXX_COMPILER_ID:MSVC>>>:-O3>
+        $<$<CONFIG:Release>:-O3>
 )
 
 if (PROJECT_IS_TOP_LEVEL AND CACHESYSTEM_BUILD_BENCHMARK AND EXISTS "${PROJECT_SOURCE_DIR}/test.cpp")
@@ -104,8 +82,7 @@ if (PROJECT_IS_TOP_LEVEL AND CACHESYSTEM_BUILD_BENCHMARK AND EXISTS "${PROJECT_S
     cachesystem_apply_target_quality(cache_system_benchmark)
     target_compile_definitions(cache_system_benchmark PRIVATE $<$<CONFIG:Release>:NDEBUG>)
     target_compile_options(cache_system_benchmark PRIVATE
-            $<$<AND:$<CONFIG:Release>,$<CXX_COMPILER_ID:MSVC>>:/O2>
-            $<$<AND:$<CONFIG:Release>,$<NOT:$<CXX_COMPILER_ID:MSVC>>>:-O3>
+            $<$<CONFIG:Release>:-O3>
     )
 endif ()
 

@@ -83,6 +83,13 @@ namespace cache_system {
             return target.cache.erase(key);
         }
 
+        void clear() {
+            for (auto &item: shards_) {
+                std::unique_lock lock(item->mutex);
+                item->cache.clear();
+            }
+        }
+
         [[nodiscard]] bool contains(const Key &key) const {
             const shard &target = select(key);
             std::shared_lock lock(target.mutex);

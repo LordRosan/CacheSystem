@@ -54,4 +54,5 @@
 
 - `synchronized_lru_cache` 对整个 LRU cache 加锁，接口简单但竞争集中。
 - `sharded_lru_cache` 把总 capacity 分给多个 shard，减小不同 key 的锁竞争。
+- `sharded_lru_cache::clear()` 会按 shard 顺序清空所有 shards。
 - `with_value()` 在持锁期间执行 callback；callback 必须保持短小，不能重入同一个 cache。

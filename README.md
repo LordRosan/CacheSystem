@@ -117,7 +117,7 @@ cmake --build cmake-build-debug
 ctest --test-dir cmake-build-debug --output-on-failure
 ```
 
-质量验证提供 `analysis` preset，启用 GCC `-fanalyzer`。`CACHESYSTEM_ENABLE_CLANG_TIDY=ON` 保留为手动可选项，用于能够稳定解析当前工具链 headers 的环境。
+质量验证提供 `analysis` preset，启用 GCC `-fanalyzer`。
 
 补充工程文档：
 

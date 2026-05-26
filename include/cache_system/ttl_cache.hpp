@@ -49,8 +49,13 @@ namespace cache_system {
             auto found = items_.find(key);
             if (found != items_.end()) {
                 const std::uint64_t generation = next_generation();
-                expirations_.push(expiration_record{expires_at, key, generation});
-                found->second.value = std::move(value);
+                expirations_.push(expiration_record{expires_at, found->first, generation});
+                try {
+                    found->second.value = std::move(value);
+                } catch (...) {
+                    generation_ = generation;
+                    throw;
+                }
                 found->second.expires_at = expires_at;
                 found->second.generation = generation;
                 generation_ = generation;

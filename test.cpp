@@ -28,10 +28,6 @@
 #include <utility>
 #include <vector>
 
-#if defined(_MSC_VER)
-#include <intrin.h>
-#endif
-
 #ifndef CACHE_SYSTEM_RESULTS_DIR
 #define CACHE_SYSTEM_RESULTS_DIR "results"
 #endif
@@ -147,23 +143,11 @@ namespace {
 #if !defined(CACHE_SYSTEM_CORRECTNESS_ONLY)
     template<typename T>
     void do_not_optimize(const T &value) {
-#if defined(__GNUC__) || defined(__clang__)
         asm volatile("" : : "m"(value) : "memory");
-#elif defined(_MSC_VER)
-        _ReadWriteBarrier();
-        (void) value;
-#else
-        const volatile auto *sink = &value;
-        (void) sink;
-#endif
     }
 
     void clobber_memory() {
-#if defined(__GNUC__) || defined(__clang__)
         asm volatile("" : : : "memory");
-#elif defined(_MSC_VER)
-        _ReadWriteBarrier();
-#endif
     }
 
     template<typename Warmup, typename Work>
@@ -195,11 +179,7 @@ namespace {
         const auto now = std::chrono::system_clock::now();
         const std::time_t raw = std::chrono::system_clock::to_time_t(now);
         std::tm tm{};
-#if defined(_WIN32)
         localtime_s(&tm, &raw);
-#else
-        localtime_r(&raw, &tm);
-#endif
         std::ostringstream out;
         out << std::put_time(&tm, "%Y-%m-%d-%H-%M-%S");
         return out.str();
@@ -209,11 +189,7 @@ namespace {
         const auto now = std::chrono::system_clock::now();
         const std::time_t raw = std::chrono::system_clock::to_time_t(now);
         std::tm tm{};
-#if defined(_WIN32)
         localtime_s(&tm, &raw);
-#else
-        localtime_r(&raw, &tm);
-#endif
         std::ostringstream out;
         out << std::put_time(&tm, "%Y/%m/%d-%H/%M/%S");
         return out.str();
@@ -314,6 +290,28 @@ namespace {
     struct copy_throwing_key_hash {
         [[nodiscard]] std::size_t operator()(const copy_throwing_key &key) const noexcept {
             return std::hash<int>{}(key.value);
+        }
+    };
+
+    struct move_assign_throwing_value {
+        int value = 0;
+        static inline bool throw_on_move_assign = false;
+
+        explicit move_assign_throwing_value(int input = 0) noexcept : value(input) {
+        }
+
+        move_assign_throwing_value(const move_assign_throwing_value &) = default;
+
+        move_assign_throwing_value(move_assign_throwing_value &&) noexcept = default;
+
+        move_assign_throwing_value &operator=(const move_assign_throwing_value &) = default;
+
+        move_assign_throwing_value &operator=(move_assign_throwing_value &&other) {
+            if (throw_on_move_assign) {
+                throw std::runtime_error("value move assignment failure");
+            }
+            value = other.value;
+            return *this;
         }
     };
 
@@ -570,6 +568,30 @@ namespace {
             require_correctness(cache.get(copy_throwing_key{2}).value_or(0) == 20, "ttl_cache 更新失败后必须保留旧 Value");
         }));
 
+        checks.push_back(run_correctness_check("ttl_cache update assignment exception generation isolation", [] {
+            cache_system::ttl_cache<int, move_assign_throwing_value, manual_clock> cache(4);
+            manual_clock::current = manual_clock::time_point(manual_clock::duration(0));
+            cache.put(1, move_assign_throwing_value{10}, manual_clock::duration(100));
+
+            manual_clock::current = manual_clock::time_point(manual_clock::duration(10));
+            move_assign_throwing_value::throw_on_move_assign = true;
+            bool update_threw = false;
+            try {
+                cache.put(1, move_assign_throwing_value{20}, manual_clock::duration(1));
+            } catch (const std::runtime_error &) {
+                update_threw = true;
+            }
+            move_assign_throwing_value::throw_on_move_assign = false;
+
+            require_correctness(update_threw, "ttl_cache 必须传播 Value assignment 异常");
+            cache.put(1, move_assign_throwing_value{30}, manual_clock::duration(100));
+
+            manual_clock::current = manual_clock::time_point(manual_clock::duration(12));
+            auto *value = cache.get_ref(1);
+            require_correctness(value != nullptr && value->value == 30,
+                                "ttl_cache Value assignment 失败留下的 expiration record 不得污染后续 generation");
+        }));
+
         checks.push_back(run_correctness_check("weighted_lru_cache overweight rejection", [] {
             cache_system::weighted_lru_cache<int, std::string, string_weight> cache(8);
             require_correctness(!cache.put(1, std::string(64, 'x')), "weighted_lru_cache 必须拒绝 overweight value");
@@ -627,6 +649,17 @@ namespace {
             require_correctness(visited, "synchronized_lru_cache with_value 必须访问已存在 entry");
             require_correctness(cache.get(1).value_or(std::string{}) == "value-updated",
                                 "with_value mutation 必须写回缓存中的 Value");
+        }));
+
+        checks.push_back(run_correctness_check("sharded_lru_cache clear", [] {
+            cache_system::sharded_lru_cache<int, int> cache(16, 4);
+            for (int i = 0; i < 32; ++i) {
+                cache.put(i, i);
+            }
+
+            cache.clear();
+            require_correctness(cache.size() == 0, "sharded_lru_cache clear 必须清空所有 shards");
+            require_correctness(!cache.contains(1), "sharded_lru_cache clear 后不得保留旧 key");
         }));
 #endif
 

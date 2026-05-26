@@ -33,7 +33,7 @@ cmake --preset analysis
 cmake --build cmake-build-analysis
 ```
 
-`analysis` preset 会启用 `CACHESYSTEM_ENABLE_GCC_ANALYZER=ON`，通过 GCC `-fanalyzer` 执行本地 static analysis。`CACHESYSTEM_ENABLE_CLANG_TIDY=ON` 保留为手动可选项，用于能够稳定解析当前工具链 headers 的环境。
+`analysis` preset 会启用 `CACHESYSTEM_ENABLE_GCC_ANALYZER=ON`，通过 GCC `-fanalyzer` 执行本地 static analysis。
 
 ## 性能基线
 

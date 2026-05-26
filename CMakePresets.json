@@ -28,7 +28,6 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CACHESYSTEM_BUILD_BENCHMARK": "OFF",
-        "CACHESYSTEM_ENABLE_CLANG_TIDY": "OFF",
         "CACHESYSTEM_ENABLE_GCC_ANALYZER": "ON"
       }
     }
