@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <ctime>
 #include <exception>
@@ -14,6 +15,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <list>
 #include <memory>
 #include <numeric>
 #include <optional>
@@ -34,9 +36,45 @@
 #define CACHE_SYSTEM_RESULTS_DIR "results"
 #endif
 
+#if defined(CACHE_SYSTEM_TEST_ALL) || defined(CACHE_SYSTEM_TEST_UNIT) || !defined(CACHE_SYSTEM_CORRECTNESS_ONLY)
+#define CACHE_SYSTEM_RUN_UNIT_TESTS 1
+#endif
+
+#if defined(CACHE_SYSTEM_TEST_ALL) || defined(CACHE_SYSTEM_TEST_STRESS) || !defined(CACHE_SYSTEM_CORRECTNESS_ONLY)
+#define CACHE_SYSTEM_RUN_STRESS_TESTS 1
+#endif
+
+#if defined(CACHE_SYSTEM_TEST_ALL) || defined(CACHE_SYSTEM_TEST_RANDOMIZED) || !defined(CACHE_SYSTEM_CORRECTNESS_ONLY)
+#define CACHE_SYSTEM_RUN_RANDOMIZED_TESTS 1
+#endif
+
 namespace {
 #if !defined(CACHE_SYSTEM_CORRECTNESS_ONLY)
     using clock_type = std::chrono::steady_clock;
+    constexpr std::size_t benchmark_sample_count = 7;
+
+    [[nodiscard]] double median_value(std::vector<double> values) {
+        if (values.empty()) {
+            return 0.0;
+        }
+
+        std::sort(values.begin(), values.end());
+        const std::size_t middle = values.size() / 2;
+        if ((values.size() % 2) != 0) {
+            return values[middle];
+        }
+        return (values[middle - 1] + values[middle]) / 2.0;
+    }
+
+    [[nodiscard]] double percentile_value(std::vector<double> values, std::size_t percentile) {
+        if (values.empty()) {
+            return 0.0;
+        }
+
+        std::sort(values.begin(), values.end());
+        const std::size_t index = std::min(values.size() - 1, ((values.size() * percentile) + 99) / 100 - 1);
+        return values[index];
+    }
 
     struct benchmark_result {
         std::string group;
@@ -45,13 +83,57 @@ namespace {
         std::size_t operations = 0;
         double total_ms = 0.0;
         double hit_rate = -1.0;
+        std::vector<double> sample_ms;
 
-        [[nodiscard]] double ns_per_op() const noexcept {
-            return operations == 0 ? 0.0 : (total_ms * 1'000'000.0) / static_cast<double>(operations);
+        [[nodiscard]] double ns_per_op() const {
+            return operations == 0 ? 0.0 : (median_ms() * 1'000'000.0) / static_cast<double>(operations);
         }
 
-        [[nodiscard]] double ops_per_second() const noexcept {
-            return total_ms <= 0.0 ? 0.0 : (static_cast<double>(operations) * 1000.0) / total_ms;
+        [[nodiscard]] double ops_per_second() const {
+            const double median = median_ms();
+            return median <= 0.0 ? 0.0 : (static_cast<double>(operations) * 1000.0) / median;
+        }
+
+        [[nodiscard]] std::size_t sample_count() const noexcept {
+            return sample_ms.empty() ? 1 : sample_ms.size();
+        }
+
+        [[nodiscard]] double median_ms() const {
+            return sample_ms.empty() ? total_ms : median_value(sample_ms);
+        }
+
+        [[nodiscard]] double min_ms() const {
+            if (sample_ms.empty()) {
+                return total_ms;
+            }
+            return *std::min_element(sample_ms.begin(), sample_ms.end());
+        }
+
+        [[nodiscard]] double p95_ms() const {
+            return sample_ms.empty() ? total_ms : percentile_value(sample_ms, 95);
+        }
+
+        [[nodiscard]] double min_ns_per_op() const {
+            return operations == 0 ? 0.0 : (min_ms() * 1'000'000.0) / static_cast<double>(operations);
+        }
+
+        [[nodiscard]] double p95_ns_per_op() const {
+            return operations == 0 ? 0.0 : (p95_ms() * 1'000'000.0) / static_cast<double>(operations);
+        }
+
+        [[nodiscard]] double stddev_ns_per_op() const {
+            if (operations == 0 || sample_ms.size() <= 1) {
+                return 0.0;
+            }
+
+            const double median = median_ms();
+            double variance = 0.0;
+            for (double sample: sample_ms) {
+                const double delta = sample - median;
+                variance += delta * delta;
+            }
+            variance /= static_cast<double>(sample_ms.size() - 1);
+            return (std::sqrt(variance) * 1'000'000.0) / static_cast<double>(operations);
         }
     };
 #endif
@@ -94,13 +176,19 @@ namespace {
         Work work,
         double hit_rate = -1.0) {
         warmup();
-        clobber_memory();
-        const auto begin = clock_type::now();
-        work();
-        clobber_memory();
-        const auto end = clock_type::now();
-        const std::chrono::duration<double, std::milli> elapsed = end - begin;
-        return {std::move(group), std::move(name), std::move(parameters), operations, elapsed.count(), hit_rate};
+        std::vector<double> samples;
+        samples.reserve(benchmark_sample_count);
+        for (std::size_t sample = 0; sample < benchmark_sample_count; ++sample) {
+            clobber_memory();
+            const auto begin = clock_type::now();
+            work();
+            clobber_memory();
+            const auto end = clock_type::now();
+            const std::chrono::duration<double, std::milli> elapsed = end - begin;
+            samples.push_back(elapsed.count());
+        }
+        const double median_ms = median_value(samples);
+        return {std::move(group), std::move(name), std::move(parameters), operations, median_ms, hit_rate, std::move(samples)};
     }
 
     std::string timestamp_for_file() {
@@ -232,6 +320,7 @@ namespace {
     std::vector<correctness_check> run_correctness_tests() {
         std::vector<correctness_check> checks;
 
+#if defined(CACHE_SYSTEM_RUN_UNIT_TESTS)
         checks.push_back(run_correctness_check("sharded_lru_cache exact capacity", [] {
             cache_system::sharded_lru_cache<int, int> cache(17, 16);
             for (int i = 0; i < 100; ++i) {
@@ -539,6 +628,135 @@ namespace {
             require_correctness(cache.get(1).value_or(std::string{}) == "value-updated",
                                 "with_value mutation 必须写回缓存中的 Value");
         }));
+#endif
+
+#if defined(CACHE_SYSTEM_RUN_STRESS_TESTS)
+        checks.push_back(run_correctness_check("lru_cache sustained capacity stress", [] {
+            constexpr std::size_t capacity = 256;
+            cache_system::lru_cache<int, int> cache(capacity);
+            for (int i = 0; i < 80'000; ++i) {
+                cache.put(i % 1024, i);
+                (void) cache.get((i * 17) % 1024);
+                require_correctness(cache.size() <= capacity, "lru_cache stress 不得突破 capacity");
+            }
+
+            const auto stats = cache.stats();
+            require_correctness(stats.inserts > 0, "lru_cache stress 必须产生 inserts");
+            require_correctness(stats.evictions > 0, "lru_cache stress 必须产生 evictions");
+            require_correctness(stats.hits + stats.misses > 0, "lru_cache stress 必须覆盖 lookup path");
+        }));
+
+        checks.push_back(run_correctness_check("sharded_lru_cache concurrent stress", [] {
+            cache_system::sharded_lru_cache<int, int> cache(1024, 8);
+            constexpr std::size_t thread_count = 4;
+            constexpr std::size_t operations_per_thread = 30'000;
+            std::atomic<std::size_t> failures = 0;
+            std::vector<std::thread> threads;
+            threads.reserve(thread_count);
+
+            for (std::size_t thread_index = 0; thread_index < thread_count; ++thread_index) {
+                threads.emplace_back([&, thread_index] {
+                    for (std::size_t i = 0; i < operations_per_thread; ++i) {
+                        const int key = static_cast<int>((i + thread_index * 4099) % 4096);
+                        if ((i % 5) == 0) {
+                            cache.put(key, static_cast<int>(i));
+                        } else {
+                            (void) cache.get(key);
+                        }
+                        if (cache.size() > cache.capacity()) {
+                            failures.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+                });
+            }
+
+            for (auto &thread: threads) {
+                thread.join();
+            }
+
+            require_correctness(failures.load(std::memory_order_relaxed) == 0, "sharded_lru_cache stress 不得突破 capacity");
+            require_correctness(cache.size() <= cache.capacity(), "sharded_lru_cache stress 结束后 size 必须不超过 capacity");
+            require_correctness(cache.stats().hits + cache.stats().misses > 0, "sharded_lru_cache stress 必须覆盖 lookup path");
+        }));
+#endif
+
+#if defined(CACHE_SYSTEM_RUN_RANDOMIZED_TESTS)
+        checks.push_back(run_correctness_check("lru_cache randomized model", [] {
+            constexpr std::size_t capacity = 32;
+            cache_system::lru_cache<int, int> cache(capacity);
+            std::list<int> recency;
+            struct model_entry {
+                int value = 0;
+                std::list<int>::iterator position{};
+            };
+            std::unordered_map<int, model_entry> model;
+            std::mt19937 rng(0xCA11CE);
+            std::uniform_int_distribution<int> action_dist(0, 99);
+            std::uniform_int_distribution<int> key_dist(0, 127);
+
+            auto touch_model = [&](int key) {
+                auto found = model.find(key);
+                require_correctness(found != model.end(), "model touch 必须命中已有 key");
+                recency.erase(found->second.position);
+                recency.push_front(key);
+                found->second.position = recency.begin();
+            };
+
+            auto put_model = [&](int key, int value) {
+                auto found = model.find(key);
+                if (found != model.end()) {
+                    found->second.value = value;
+                    touch_model(key);
+                    return;
+                }
+
+                recency.push_front(key);
+                model.emplace(key, model_entry{value, recency.begin()});
+                if (model.size() > capacity) {
+                    const int victim = recency.back();
+                    recency.pop_back();
+                    model.erase(victim);
+                }
+            };
+
+            auto erase_model = [&](int key) -> bool {
+                auto found = model.find(key);
+                if (found == model.end()) {
+                    return false;
+                }
+                recency.erase(found->second.position);
+                model.erase(found);
+                return true;
+            };
+
+            for (int step = 0; step < 20'000; ++step) {
+                const int action = action_dist(rng);
+                const int key = key_dist(rng);
+                if (action < 45) {
+                    const int value = step * 3;
+                    cache.put(key, value);
+                    put_model(key, value);
+                } else if (action < 85) {
+                    const auto actual = cache.get(key);
+                    const auto expected = model.find(key);
+                    if (expected == model.end()) {
+                        require_correctness(!actual.has_value(), "randomized model miss 必须与 lru_cache 一致");
+                    } else {
+                        require_correctness(actual.has_value() && *actual == expected->second.value,
+                                            "randomized model hit value 必须与 lru_cache 一致");
+                        touch_model(key);
+                    }
+                } else {
+                    const bool actual = cache.erase(key);
+                    const bool expected = erase_model(key);
+                    require_correctness(actual == expected, "randomized model erase 结果必须与 lru_cache 一致");
+                }
+
+                require_correctness(cache.size() == model.size(), "randomized model size 必须与 lru_cache 一致");
+                require_correctness(cache.size() <= capacity, "randomized model 不得突破 capacity");
+            }
+        }));
+#endif
 
         return checks;
     }
@@ -837,52 +1055,74 @@ namespace {
         return result;
     }
 
+    template<typename Measure>
+    benchmark_result run_measured_case(
+        std::string group,
+        std::string name,
+        std::string parameters,
+        std::size_t operations,
+        Measure measure,
+        double hit_rate = -1.0) {
+        std::vector<double> samples;
+        samples.reserve(benchmark_sample_count);
+        for (std::size_t sample = 0; sample < benchmark_sample_count; ++sample) {
+            clobber_memory();
+            samples.push_back(measure());
+            clobber_memory();
+        }
+        const double median_ms = median_value(samples);
+        return {std::move(group), std::move(name), std::move(parameters), operations, median_ms, hit_rate, std::move(samples)};
+    }
+
     template<typename Cache>
     benchmark_result threaded_cache_case(std::string name, Cache &cache, const std::vector<int> &keys) {
         const std::size_t threads = std::max(2u, std::min(8u, std::thread::hardware_concurrency()));
         constexpr std::size_t operations_per_thread = 80'000;
-        std::atomic<std::size_t> ready = 0;
-        std::atomic<bool> start = false;
-        auto worker = [&](std::size_t thread_index) {
-            ready.fetch_add(1, std::memory_order_release);
-            while (!start.load(std::memory_order_acquire)) {
+        auto measure = [&] {
+            std::atomic<std::size_t> ready = 0;
+            std::atomic<bool> start = false;
+            auto worker = [&](std::size_t thread_index) {
+                ready.fetch_add(1, std::memory_order_release);
+                while (!start.load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+                std::uint64_t checksum = 0;
+                for (std::size_t i = 0; i < operations_per_thread; ++i) {
+                    const int key = keys[(i + thread_index * 997) % keys.size()];
+                    if ((i % 16) == 0) {
+                        cache.put(key, key + static_cast<int>(i));
+                    } else {
+                        checksum += cache.get(key).value_or(0);
+                    }
+                }
+                do_not_optimize(checksum);
+            };
+
+            std::vector<std::thread> workers;
+            workers.reserve(threads);
+            for (std::size_t i = 0; i < threads; ++i) {
+                workers.emplace_back(worker, i);
+            }
+            while (ready.load(std::memory_order_acquire) != threads) {
                 std::this_thread::yield();
             }
-            std::uint64_t checksum = 0;
-            for (std::size_t i = 0; i < operations_per_thread; ++i) {
-                const int key = keys[(i + thread_index * 997) % keys.size()];
-                if ((i % 16) == 0) {
-                    cache.put(key, key + static_cast<int>(i));
-                } else {
-                    checksum += cache.get(key).value_or(0);
-                }
+            const auto begin = clock_type::now();
+            start.store(true, std::memory_order_release);
+            for (auto &thread: workers) {
+                thread.join();
             }
-            do_not_optimize(checksum);
+            const auto end = clock_type::now();
+            const std::chrono::duration<double, std::milli> elapsed = end - begin;
+            return elapsed.count();
         };
-
-        std::vector<std::thread> workers;
-        workers.reserve(threads);
-        for (std::size_t i = 0; i < threads; ++i) {
-            workers.emplace_back(worker, i);
-        }
-        while (ready.load(std::memory_order_acquire) != threads) {
-            std::this_thread::yield();
-        }
-        const auto begin = clock_type::now();
-        start.store(true, std::memory_order_release);
-        for (auto &thread: workers) {
-            thread.join();
-        }
-        const auto end = clock_type::now();
-        const std::chrono::duration<double, std::milli> elapsed = end - begin;
-        return {
+        auto result = run_measured_case(
             "concurrent cache access",
             std::move(name),
             "threads=" + std::to_string(threads) + "; operations/thread=80000; reads=15/16; writes=1/16",
             threads * operations_per_thread,
-            elapsed.count(),
-            cache.stats().hit_rate()
-        };
+            measure);
+        result.hit_rate = cache.stats().hit_rate();
+        return result;
     }
 
     std::unordered_map<std::string, double> load_baseline(const std::filesystem::path &path) {
@@ -978,7 +1218,7 @@ namespace {
             return;
         }
 
-        report << "| 用例 | baseline ns/op | current ns/op | Δ ns/op | Δ % | 状态 | 备注 |\n";
+        report << "| 用例 | baseline median ns/op | current median ns/op | Δ ns/op | Δ % | 状态 | 备注 |\n";
         report << "| --- | ---: | ---: | ---: | ---: | --- | --- |\n";
         for (const auto &result: results) {
             const auto found = baseline.find(result.name);
@@ -1018,6 +1258,7 @@ namespace {
         report << "- Build: Release (`NDEBUG` defined)\n";
         report << "- Timestamp: " << timestamp_pretty() << '\n';
         report << "- Random seed: 0x5EED / 0xA11CE / 0x51A7E\n";
+        report << "- Benchmark samples: " << benchmark_sample_count << '\n';
         report << "- Result file: " << report_path.generic_string() << "\n\n";
 
         report << "## 正确性测试\n\n";
@@ -1042,7 +1283,7 @@ namespace {
         const auto group_best_ns = best_ns_by_group(group_bests);
 
         report << "`相对组内 best` 使用同一 `组别` 中最低 `ns/op` 作为 1.00x，比较指标只看 `ns/op`；`命中率` 用于解释 cache 语义下的性能结果。\n\n";
-        report << "| 组别 | best 用例 | best ns/op | 比较指标 |\n";
+        report << "| 组别 | best 用例 | best median ns/op | 比较指标 |\n";
         report << "| --- | --- | ---: | --- |\n";
         for (const benchmark_result *best: group_bests) {
             report << "| " << best->group
@@ -1051,8 +1292,8 @@ namespace {
                     << " | ns/op |\n";
         }
 
-        report << "\n| 组别 | 用例 | 测试参数 | 操作次数 | 总耗时 ms | ns/op | ops/s | 命中率 | 相对组内 best |\n";
-        report << "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |\n";
+        report << "\n| 组别 | 用例 | 测试参数 | 操作次数/样本 | 样本数 | median ms | min ns/op | median ns/op | p95 ns/op | stddev ns/op | ops/s | 命中率 | 相对组内 best |\n";
+        report << "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n";
         for (const auto &result: results) {
             const auto best = group_best_ns.find(result.group);
             const double relative_best = best != group_best_ns.end() && best->second > 0.0 && result.ns_per_op() > 0.0
@@ -1062,8 +1303,12 @@ namespace {
                     << " | " << result.name
                     << " | " << result.parameters
                     << " | " << result.operations
-                    << " | " << std::fixed << std::setprecision(3) << result.total_ms
+                    << " | " << result.sample_count()
+                    << " | " << std::fixed << std::setprecision(3) << result.median_ms()
+                    << " | " << std::fixed << std::setprecision(2) << result.min_ns_per_op()
                     << " | " << std::fixed << std::setprecision(2) << result.ns_per_op()
+                    << " | " << std::fixed << std::setprecision(2) << result.p95_ns_per_op()
+                    << " | " << std::fixed << std::setprecision(2) << result.stddev_ns_per_op()
                     << " | " << std::fixed << std::setprecision(0) << result.ops_per_second()
                     << " | " << format_hit_rate(result.hit_rate)
                     << " | " << std::fixed << std::setprecision(2) << relative_best << "x"
@@ -1087,6 +1332,7 @@ namespace {
         report << "## 测试方法\n\n";
         report << "- 正确性测试在 benchmark 前执行；任何失败都会终止 benchmark。\n";
         report << "- hit、miss、mixed、SLRU、TinyLFU admission、TTL-expiration、weighted eviction 和 concurrent paths 分别测量。\n";
+        report << "- 每个 benchmark case 采集多个样本，报告使用 median 作为 baseline 对比和 `相对组内 best` 的主指标。\n";
         report << "- random streams 在计时前生成，并使用固定 seed 保证可重复。\n";
         report << "- 对照组使用 `std::unordered_map`，只比较语义相近的 lookup path。\n";
         report << "- `do_not_optimize` 和 compiler memory barrier 用于降低编译器过度优化风险。\n";
